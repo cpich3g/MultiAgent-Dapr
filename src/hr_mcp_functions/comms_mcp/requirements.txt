@@ -1,0 +1,6 @@
+azure-functions
+fastmcp
+pydantic
+pydantic-settings
+azure-identity
+httpx

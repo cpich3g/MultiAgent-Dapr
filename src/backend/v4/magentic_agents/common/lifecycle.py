@@ -68,7 +68,11 @@ class MCPEnabledBase:
         self._stack = AsyncExitStack()
 
         # Acquire credential
-        self.creds = DefaultAzureCredential()
+        self.creds = DefaultAzureCredential(
+            additionally_allowed_tenants=["*"],
+            exclude_shared_token_cache_credential=True,
+            process_timeout=30,
+        )
         if self._stack:
             await self._stack.enter_async_context(self.creds)
         # Create AgentsClient
