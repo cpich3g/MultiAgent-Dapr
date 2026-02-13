@@ -13,7 +13,7 @@ from agent_framework import (
 # from agent_framework.azure import AzureAIAgentClient
 from agent_framework_azure_ai import AzureAIAgentClient
 from azure.ai.agents.aio import AgentsClient
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import AzureCliCredential, DefaultAzureCredential
 from common.database.database_base import DatabaseBase
 from common.models.messages_af import CurrentTeamAgent, TeamConfiguration
 from common.utils.utils_agents import (

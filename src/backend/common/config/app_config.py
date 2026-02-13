@@ -5,7 +5,7 @@ from typing import Optional
 
 from azure.ai.projects.aio import AIProjectClient
 from azure.cosmos import CosmosClient
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+from azure.identity import AzureCliCredential, DefaultAzureCredential, ManagedIdentityCredential
 from dotenv import load_dotenv
 
 
@@ -123,6 +123,10 @@ class AppConfig:
             Credential object: Either DefaultAzureCredential or ManagedIdentityCredential.
         """
         if self.APP_ENV == "dev":
+            if self.AZURE_TENANT_ID:
+                return AzureCliCredential(
+                    tenant_id=self.AZURE_TENANT_ID,
+                )
             return DefaultAzureCredential(
                 additionally_allowed_tenants=["*"],
                 exclude_shared_token_cache_credential=True,
