@@ -1,0 +1,18 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AZURE_TENANT_ID": "",
+    "AZURE_CLIENT_ID": "",
+    "SAP_API_BASE_URL": "https://api.successfactors.example.com/odata/v2",
+    "SAP_COMPANY_ID": "CONTOSO",
+    "GRAPH_BASE_URL": "https://graph.microsoft.com/v1.0",
+    "SERVICENOW_INSTANCE": "https://contoso.service-now.com",
+    "SERVICENOW_CLIENT_ID": "",
+    "SERVICENOW_CLIENT_SECRET": "",
+    "BADGE_SYSTEM_URL": "https://access.contoso.com/api",
+    "COSMOS_CONNECTION_STRING": "",
+    "DAPR_STATE_STORE": "statestore"
+  }
+}
