@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import AsyncExitStack
 from typing import Any, Optional
 
@@ -68,11 +69,15 @@ class MCPEnabledBase:
         self._stack = AsyncExitStack()
 
         # Acquire credential
-        self.creds = DefaultAzureCredential(
-            additionally_allowed_tenants=["*"],
-            exclude_shared_token_cache_credential=True,
-            process_timeout=30,
-        )
+        tenant_id = os.environ.get("AZURE_TENANT_ID")
+        if os.environ.get("APP_ENV", "dev") == "dev" and tenant_id:
+            self.creds = AzureCliCredential(tenant_id=tenant_id)
+        else:
+            self.creds = DefaultAzureCredential(
+                additionally_allowed_tenants=["*"],
+                exclude_shared_token_cache_credential=True,
+                process_timeout=30,
+            )
         if self._stack:
             await self._stack.enter_async_context(self.creds)
         # Create AgentsClient
