@@ -142,13 +142,13 @@ def main():
         config.enable_auth = False
 
     # Print startup info
-    print(f"🚀 Starting MACAE MCP Server")
-    print(f"📋 Transport: {args.transport.upper()}")
-    print(f"🔧 Debug: {config.debug}")
-    print(f"🔐 Auth: {'Enabled' if config.enable_auth else 'Disabled'}")
+    print(f"Starting MACAE MCP Server")
+    print(f"Transport: {args.transport.upper()}")
+    print(f"Debug: {config.debug}")
+    print(f"Auth: {'Enabled' if config.enable_auth else 'Disabled'}")
     if args.transport in ["http", "streamable-http", "sse"]:
-        print(f"🌐 Host: {args.host}")
-        print(f"🌐 Port: {args.port}")
+        print(f"Host: {args.host}")
+        print(f"Port: {args.port}")
     print("-" * 50)
 
     # Run the server
