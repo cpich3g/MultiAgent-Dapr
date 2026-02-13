@@ -1,0 +1,69 @@
+properties:
+  managedEnvironmentId: /subscriptions/db2cf8dd-6845-470c-84b4-1a3db9946d36/resourceGroups/rg-multidapr/providers/Microsoft.App/managedEnvironments/cae-multidapr
+  configuration:
+    ingress:
+      external: true
+      targetPort: 8000
+    activeRevisionsMode: Single
+    registries:
+      - server: acrmultidapr.azurecr.io
+        username: acrmultidapr
+        passwordSecretRef: acr-password
+    secrets:
+      - name: acr-password
+        value: 8EfUuf7yUH6VkYyFI4OKxxS6zmAyJEGpU9cbmLyQydZQv9Rvn8OVJQQJ99CBACfhMk5Eqg7NAAACAZCR3o3K
+    dapr:
+      enabled: true
+      appId: backend
+      appPort: 8000
+      appProtocol: http
+  template:
+    containers:
+      - name: backend
+        image: acrmultidapr.azurecr.io/backend:latest
+        resources:
+          cpu: 2.0
+          memory: 4.0Gi
+        env:
+          - name: COSMOSDB_ENDPOINT
+            value: "https://cosmos-multidapr.documents.azure.com:443/"
+          - name: COSMOSDB_DATABASE
+            value: macae
+          - name: COSMOSDB_CONTAINER
+            value: memory
+          - name: AZURE_OPENAI_ENDPOINT
+            value: "https://ai-justinjoy-4099.openai.azure.com/"
+          - name: AZURE_OPENAI_MODEL_NAME
+            value: gpt-4.1-mini
+          - name: AZURE_OPENAI_DEPLOYMENT_NAME
+            value: gpt-4.1-mini
+          - name: AZURE_OPENAI_RAI_DEPLOYMENT_NAME
+            value: gpt-4.1
+          - name: AZURE_OPENAI_API_VERSION
+            value: "2024-12-01-preview"
+          - name: AZURE_AI_PROJECT_ENDPOINT
+            value: "https://ai-justinjoy-4099.services.ai.azure.com/api/projects/ai-justinjoy-4099-project"
+          - name: AZURE_AI_AGENT_ENDPOINT
+            value: "https://ai-justinjoy-4099.services.ai.azure.com/api/projects/ai-justinjoy-4099-project"
+          - name: AZURE_AI_AGENT_API_VERSION
+            value: "2025-01-01-preview"
+          - name: APP_ENV
+            value: Prod
+          - name: AZURE_TENANT_ID
+            value: "16b3c013-d300-468d-ac64-7eda0820b6d3"
+          - name: AZURE_CLIENT_ID
+            value: "358e1bfc-edbb-497f-b49e-61170c6bcf1a"
+          - name: SUPPORTED_MODELS
+            value: '["o3","o4-mini","gpt-4.1","gpt-4.1-mini"]'
+          - name: MCP_SERVER_NAME
+            value: MacaeMcpServer
+          - name: REASONING_MODEL_NAME
+            value: o4-mini
+    scale:
+      minReplicas: 1
+      maxReplicas: 3
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    /subscriptions/db2cf8dd-6845-470c-84b4-1a3db9946d36/resourcegroups/rg-multidapr/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-multidapr: {}
+

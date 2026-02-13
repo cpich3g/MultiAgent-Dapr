@@ -1,0 +1,15 @@
+componentType: state.azure.cosmosdb
+version: v1
+metadata:
+  - name: url
+    value: "https://cosmos-multidapr.documents.azure.com:443/"
+  - name: database
+    value: "macae"
+  - name: collection
+    value: "memory"
+  - name: actorStateStore
+    value: "true"
+  - name: azureClientId
+    value: "358e1bfc-edbb-497f-b49e-61170c6bcf1a"
+scopes:
+  - backend
