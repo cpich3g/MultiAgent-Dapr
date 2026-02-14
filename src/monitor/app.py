@@ -1,6 +1,6 @@
 """Agent-run monitoring dashboard — read-only view over Cosmos DB + approval proxy."""
 
-import os, json, html, httpx
+import os, json, html, asyncio, httpx
 from datetime import datetime, timezone
 from azure.cosmos import CosmosClient
 from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
@@ -86,6 +86,35 @@ def api_get_mplan(plan_id: str):
     return JSONResponse({"m_plan_id": None, "plan_id": plan_id})
 
 
+@app.post("/api/resubmit/{plan_id}")
+async def api_resubmit_plan(plan_id: str):
+    """Re-submit a failed plan's task to the backend as a new plan."""
+    plans = query(
+        "SELECT c.initial_goal, c.user_id, c.team_id FROM c WHERE c.data_type='plan' AND c.plan_id=@pid",
+        [{"name": "@pid", "value": plan_id}],
+    )
+    if not plans:
+        return JSONResponse({"error": "Plan not found"}, status_code=404)
+    p = plans[0]
+    user_id = p.get("user_id", "justinjoy@microsoft.com")
+    import uuid
+    new_session = str(uuid.uuid4())
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        # select_team
+        await client.post(f"{BACKEND_URL}/api/v4/select_team",
+            json={"team_id": p.get("team_id", "00000000-0000-0000-0000-000000000001")},
+            headers={"Content-Type": "application/json", "x-ms-client-principal-id": user_id})
+        # init_team
+        await client.get(f"{BACKEND_URL}/api/v4/init_team",
+            headers={"x-ms-client-principal-id": user_id})
+        # process_request
+        resp = await client.post(f"{BACKEND_URL}/api/v4/process_request",
+            json={"session_id": new_session, "description": p["initial_goal"]},
+            headers={"Content-Type": "application/json", "x-ms-client-principal-id": user_id})
+    return JSONResponse({"status": resp.status_code, "body": resp.json(), "new_session": new_session})
+
+
 @app.post("/api/approve/{plan_id}")
 async def api_approve_plan(plan_id: str, request: Request):
     """Proxy approval to the backend. Body: {approved: bool, feedback?: string}"""
@@ -120,19 +149,33 @@ async def api_approve_plan(plan_id: str, request: Request):
 
 @app.get("/api/email-approve/{plan_id}")
 async def email_approve(plan_id: str, decision: str = "approved"):
-    """One-click email approval link. GET /api/email-approve/{plan_id}?decision=approved"""
+    """One-click email approval link. GET /api/email-approve/{plan_id}?decision=approved
+    Polls for m_plan to appear (plan generation may still be in progress)."""
     approved = decision.lower() == "approved"
 
-    mplan_rows = query(
-        "SELECT c.id FROM c WHERE c.data_type='m_plan' AND c.plan_id=@pid",
-        [{"name": "@pid", "value": plan_id}],
-    )
+    # Poll for m_plan up to 90 seconds (plan generation may still be running)
+    mplan_rows = None
+    for attempt in range(18):
+        mplan_rows = query(
+            "SELECT c.id FROM c WHERE c.data_type='m_plan' AND c.plan_id=@pid",
+            [{"name": "@pid", "value": plan_id}],
+        )
+        if mplan_rows:
+            break
+        if attempt < 17:
+            await asyncio.sleep(5)
+
     plan_rows = query(
         "SELECT c.user_id FROM c WHERE c.data_type='plan' AND c.plan_id=@pid",
         [{"name": "@pid", "value": plan_id}],
     )
     if not mplan_rows:
-        return HTMLResponse("<h2>&#10060; Plan not ready for approval yet. Try again in a minute.</h2>")
+        return HTMLResponse(
+            "<h2>&#10060; Plan not ready for approval yet.</h2>"
+            "<p>The AI is still generating the execution plan (or it may have failed due to a timeout).</p>"
+            f"<p>Try again: <a href='/api/email-approve/{plan_id}?decision={decision}'>Click here to retry</a></p>"
+            "<p>Or check the <a href='/'>Monitor Dashboard</a> for status.</p>"
+        )
 
     m_plan_id = mplan_rows[0]["id"]
     user_id = plan_rows[0]["user_id"] if plan_rows else "justinjoy@microsoft.com"
@@ -299,15 +342,28 @@ function renderDetail(d){
 
   // Approval buttons for pending plans
   if(p.overall_status === 'in_progress' && d.steps.length === 0){
-    html += `<div class="approval-box">
-      <h3>⏳ Plan Awaiting Approval</h3>
-      <p>This plan needs your approval before agents can execute.</p>
-      <div class="approval-btns">
-        <button class="btn-approve" onclick="approvePlan('${p.plan_id}',true)">✅ Approve</button>
-        <button class="btn-reject" onclick="approvePlan('${p.plan_id}',false)">❌ Reject</button>
-      </div>
+    html += `<div class="approval-box" id="approval-box">
+      <h3>⏳ Checking plan status...</h3>
+      <p>Looking up whether the plan is ready for approval...</p>
       <div id="approval-status"></div>
     </div>`;
+    // Check if m_plan exists
+    fetch(API+'/api/plan/'+p.plan_id+'/mplan').then(r=>r.json()).then(mp=>{
+      const box = document.getElementById('approval-box');
+      if(mp.m_plan_id){
+        box.innerHTML = `<h3>⏳ Plan Ready for Approval</h3>
+          <p>This plan needs your approval before agents can execute.</p>
+          <div class="approval-btns">
+            <button class="btn-approve" onclick="approvePlan('${p.plan_id}',true)">✅ Approve</button>
+            <button class="btn-reject" onclick="approvePlan('${p.plan_id}',false)">❌ Reject</button>
+          </div>
+          <div id="approval-status"></div>`;
+      } else {
+        box.innerHTML = `<h3>⏳ Plan Still Generating...</h3>
+          <p>The AI is still creating the execution plan, or it may have failed. Check backend logs for errors.</p>
+          <p style="font-size:12px;color:#484f58">m_plan not yet created. Page auto-refreshes every 10s.</p>`;
+      }
+    });
   }
 
   // tabs

@@ -92,7 +92,21 @@ DO NOT EVER OFFER TO HELP FURTHER IN THE FINAL ANSWER! Just provide the final an
         logger.info("-" * 60)
 
         logger.info(" Creating execution plan...")
-        plan_message = await super().plan(magentic_context)
+        # Retry plan generation on transient Azure OpenAI errors (408, 429, etc.)
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                plan_message = await super().plan(magentic_context)
+                break
+            except Exception as e:
+                status_code = getattr(e, "status_code", None)
+                if attempt < max_retries and status_code in (408, 429, 500, 502, 503, 504):
+                    wait_secs = 10 * attempt
+                    logger.warning("Plan generation attempt %d/%d failed (%s %s), retrying in %ds...",
+                                   attempt, max_retries, type(e).__name__, status_code, wait_secs)
+                    await asyncio.sleep(wait_secs)
+                else:
+                    raise
         logger.info(
             " Plan created (assistant message length=%d)",
             len(plan_message.text) if plan_message and plan_message.text else 0,
@@ -104,6 +118,35 @@ DO NOT EVER OFFER TO HELP FURTHER IN THE FINAL ANSWER! Just provide the final an
 
         self.magentic_plan = self.plan_to_obj(magentic_context, self.task_ledger)
         self.magentic_plan.user_id = self.current_user_id  # annotate with user
+
+        # Persist m_plan to Cosmos DB so email approval flow can find m_plan_id
+        try:
+            from common.database.database_factory import DatabaseFactory
+            db = await DatabaseFactory.get_database(user_id=self.current_user_id)
+            # Find the latest in_progress plan for this user to link the m_plan
+            q = "SELECT c.plan_id, c.session_id FROM c WHERE c.data_type='plan' AND c.user_id=@uid AND c.overall_status='in_progress' ORDER BY c._ts DESC OFFSET 0 LIMIT 1"
+            plan_id = ""
+            session_id_val = self.current_user_id
+            async for item in db.container.query_items(query=q, parameters=[{"name": "@uid", "value": self.current_user_id}]):
+                plan_id = item.get("plan_id", "")
+                session_id_val = item.get("session_id", self.current_user_id)
+                break
+            mplan_doc = {
+                "id": self.magentic_plan.id,
+                "data_type": "m_plan",
+                "plan_id": plan_id,
+                "session_id": session_id_val,
+                "user_id": self.current_user_id,
+                "overall_status": str(self.magentic_plan.overall_status),
+                "user_request": self.magentic_plan.user_request,
+                "steps": [s.model_dump() if hasattr(s, 'model_dump') else str(s) for s in self.magentic_plan.steps],
+                "facts": self.magentic_plan.facts,
+                "team": self.magentic_plan.team,
+            }
+            await db.container.upsert_item(mplan_doc)
+            logger.info("Persisted m_plan %s to Cosmos DB (plan_id=%s)", self.magentic_plan.id, plan_id)
+        except Exception as e:
+            logger.warning("Failed to persist m_plan to Cosmos: %s", e)
 
         approval_message = messages.PlanApprovalRequest(
             plan=self.magentic_plan,
