@@ -76,14 +76,17 @@ def api_sessions():
 
 @app.get("/api/plan/{plan_id}/mplan")
 def api_get_mplan(plan_id: str):
-    """Get the m_plan for a plan to extract m_plan_id for approval."""
+    """Get the m_plan for a plan to extract m_plan_id and steps for approval/flowchart."""
     rows = query(
-        "SELECT c.id, c.plan_id, c.session_id FROM c WHERE c.data_type='m_plan' AND c.plan_id=@pid",
+        "SELECT * FROM c WHERE c.data_type='m_plan' AND c.plan_id=@pid",
         [{"name": "@pid", "value": plan_id}],
     )
     if rows:
-        return JSONResponse({"m_plan_id": rows[0].get("id"), "plan_id": plan_id})
-    return JSONResponse({"m_plan_id": None, "plan_id": plan_id})
+        r = rows[0]
+        return JSONResponse({"m_plan_id": r.get("id"), "plan_id": plan_id,
+                             "steps": r.get("steps", []), "facts": r.get("facts", ""),
+                             "team": r.get("team", [])})
+    return JSONResponse({"m_plan_id": None, "plan_id": plan_id, "steps": [], "facts": "", "team": []})
 
 
 @app.post("/api/resubmit/{plan_id}")
@@ -264,6 +267,14 @@ a{color:#58a6ff;text-decoration:none}
 .btn-approve{background:#238636;color:#fff}.btn-approve:hover{background:#2ea043}
 .btn-reject{background:#da3633;color:#fff}.btn-reject:hover{background:#e5534b}
 #approval-status{margin-top:8px;font-size:13px}
+/* flowchart */
+.flow-container{padding:20px;display:flex;justify-content:center;overflow:auto}
+.flow-svg .node-rect{rx:12;ry:12;stroke-width:2;filter:drop-shadow(2px 3px 4px rgba(0,0,0,.4))}
+.flow-svg .node-text{font-size:12px;font-weight:600;fill:#c9d1d9;text-anchor:middle;dominant-baseline:central}
+.flow-svg .node-action{font-size:10px;fill:#8b949e;text-anchor:middle;dominant-baseline:central}
+.flow-svg .edge{stroke:#30363d;stroke-width:2;fill:none;marker-end:url(#arrowhead)}
+.flow-svg .edge-active{stroke:#58a6ff;stroke-width:2.5}
+.flow-svg .edge-done{stroke:#3fb950;stroke-width:2}
 </style>
 </head>
 <body>
@@ -290,7 +301,7 @@ a{color:#58a6ff;text-decoration:none}
 
 <script>
 const API = '';
-let plans = [], activePlan = null, activeTab = 'steps';
+let plans = [], activePlan = null, activeTab = 'flow';
 
 function esc(s){ const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 function badge(s){ return `<span class="badge ${s||''}">${esc(s)}</span>`; }
@@ -368,11 +379,18 @@ function renderDetail(d){
 
   // tabs
   html += `<div class="tabs">
+    <div class="tab ${activeTab==='flow'?'active':''}" onclick="activeTab='flow';selectPlan('${activePlan}')">🔀 Agent Flow</div>
     <div class="tab ${activeTab==='steps'?'active':''}" onclick="activeTab='steps';selectPlan('${activePlan}')">Steps (${d.steps.length})</div>
     <div class="tab ${activeTab==='messages'?'active':''}" onclick="activeTab='messages';selectPlan('${activePlan}')">Agent Messages (${d.messages.length})</div>
   </div>`;
 
-  if(activeTab === 'steps'){
+  if(activeTab === 'flow'){
+    html += '<div class="flow-container" id="flow-container"><div style="color:#484f58">Loading agent flow...</div></div>';
+    // Fetch m_plan for flowchart data
+    fetch(API+'/api/plan/'+p.plan_id+'/mplan').then(r=>r.json()).then(mp=>{
+      renderFlowchart(mp, d.steps, document.getElementById('flow-container'));
+    });
+  } else if(activeTab === 'steps'){
     if(d.steps.length===0) html += '<div style="color:#484f58;padding:20px">No steps yet</div>';
     d.steps.forEach(s=>{
       html += `<div class="step ${s.status||''}">
@@ -392,6 +410,106 @@ function renderDetail(d){
     });
   }
   el.innerHTML = html;
+}
+
+function renderFlowchart(mplan, executedSteps, container){
+  const steps = mplan.steps || [];
+  if(!steps.length){
+    container.innerHTML = '<div style="color:#484f58;padding:20px">No agent plan steps available yet.</div>';
+    return;
+  }
+  const statusMap = {};
+  (executedSteps||[]).forEach(s=>{ if(s.agent) statusMap[s.agent] = s.status; });
+
+  const colors = ['#1f6feb','#238636','#8957e5','#da3633','#bf8700','#f778ba','#3fb950','#58a6ff','#bc8cff'];
+  const agentColor = (i) => colors[i % colors.length];
+
+  const nodeW = 210, nodeH = 74, gapX = 50, gapY = 28;
+  const startY = 50, startNodeH = 40;
+  const cols = Math.min(steps.length, 3);
+  const rows = Math.ceil(steps.length / cols);
+  const totalW = cols * nodeW + (cols-1) * gapX + 80;
+  const totalH = startY + startNodeH + 40 + rows * (nodeH + gapY) + 80;
+
+  function wobble(x,y,w,h,r){
+    const d=1.2;
+    return `M${x+r+d},${y-d} L${x+w-r-d},${y+d} Q${x+w+d},${y-d} ${x+w-d},${y+r+d} L${x+w+d},${y+h-r-d} Q${x+w-d},${y+h+d} ${x+w-r-d},${y+h-d} L${x+r+d},${y+h+d} Q${x-d},${y+h-d} ${x+d},${y+h-r-d} L${x-d},${y+r+d} Q${x+d},${y-d} ${x+r+d},${y-d} Z`;
+  }
+  function trunc(s,n){ return s&&s.length>n ? s.substring(0,n-1)+'\u2026' : (s||''); }
+
+  let svg = `<svg class="flow-svg" width="${totalW}" height="${totalH}" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ah" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#30363d"/></marker>
+    <marker id="ah-b" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#58a6ff"/></marker>
+    <marker id="ah-g" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#3fb950"/></marker>
+    <filter id="sk"><feTurbulence type="turbulence" baseFrequency="0.02" numOctaves="3" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.2"/></filter>
+  </defs>
+  <rect width="100%" height="100%" fill="#0d1117" rx="12"/>`;
+
+  // Title
+  svg += `<text x="${totalW/2}" y="28" style="font-size:14px;font-weight:700;fill:#58a6ff;text-anchor:middle;font-family:inherit">Agent Orchestration Flow</text>`;
+
+  // Start node
+  const startCX = totalW/2;
+  svg += `<ellipse cx="${startCX}" cy="${startY}" rx="72" ry="20" fill="#0d1d32" stroke="#58a6ff" stroke-width="2.5" stroke-dasharray="8,4" filter="url(#sk)"/>
+          <text x="${startCX}" y="${startY+1}" style="font-size:12px;font-weight:600;fill:#58a6ff;text-anchor:middle;dominant-baseline:central">\u{1F4E7} Email Trigger</text>`;
+
+  const firstTop = startY + startNodeH + 20;
+  const firstCX = 40 + nodeW/2;
+  svg += `<line x1="${startCX}" y1="${startY+20}" x2="${firstCX}" y2="${firstTop}" stroke="#58a6ff" stroke-width="2" stroke-dasharray="4,4" marker-end="url(#ah-b)"/>`;
+
+  const pos = [];
+  steps.forEach((step, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    const x = 40 + col * (nodeW + gapX), y = firstTop + row * (nodeH + gapY);
+    pos.push({x, y, cx: x+nodeW/2, cy: y+nodeH/2});
+
+    const agent = step.agent || 'Agent';
+    const action = trunc(step.action || '', 50);
+    const st = statusMap[agent];
+    const fill = st==='completed'?'#0d2818': st==='in_progress'||st==='action_requested'?'#0d1d32':'#161b22';
+    const stroke = st==='completed'?'#3fb950': st==='in_progress'||st==='action_requested'?'#58a6ff': agentColor(i);
+
+    svg += `<path d="${wobble(x,y,nodeW,nodeH,14)}" fill="${fill}" stroke="${stroke}" stroke-width="2" filter="url(#sk)"/>`;
+
+    const icon = st==='completed'?'\u2705': st==='in_progress'||st==='action_requested'?'\u{1F504}': st==='failed'?'\u274C':'\u23F3';
+    svg += `<text x="${x+14}" y="${y+18}" style="font-size:14px">${icon}</text>`;
+    svg += `<text x="${x+30}" y="${y+18}" style="font-size:13px;font-weight:700;fill:${stroke};dominant-baseline:central;font-family:inherit">${esc(agent)}</text>`;
+
+    const l1 = trunc(action, 32), l2 = action.length>32 ? trunc(action.substring(32),32) : '';
+    svg += `<text x="${pos[i].cx}" y="${y+40}" style="font-size:10px;fill:#8b949e;text-anchor:middle;font-family:inherit">${esc(l1)}</text>`;
+    if(l2) svg += `<text x="${pos[i].cx}" y="${y+52}" style="font-size:10px;fill:#8b949e;text-anchor:middle;font-family:inherit">${esc(l2)}</text>`;
+
+    // Step number pill
+    svg += `<rect x="${x+nodeW-28}" y="${y+4}" width="22" height="16" rx="8" fill="${stroke}" opacity="0.85"/>
+            <text x="${x+nodeW-17}" y="${y+13}" style="font-size:10px;font-weight:700;fill:#fff;text-anchor:middle;dominant-baseline:central">${i+1}</text>`;
+  });
+
+  // Edges between nodes
+  for(let i=0;i<pos.length-1;i++){
+    const a=pos[i], b=pos[i+1];
+    const fromSt = statusMap[steps[i].agent];
+    const cls = fromSt==='completed'?'stroke:#3fb950': fromSt==='in_progress'?'stroke:#58a6ff':'stroke:#30363d';
+    const mk = fromSt==='completed'?'url(#ah-g)': fromSt==='in_progress'?'url(#ah-b)':'url(#ah)';
+    const sameRow = Math.floor(i/cols)===Math.floor((i+1)/cols);
+    if(sameRow){
+      svg += `<path d="M${a.x+nodeW},${a.cy} C${a.x+nodeW+gapX/2},${a.cy} ${b.x-gapX/2},${b.cy} ${b.x},${b.cy}" fill="none" ${cls} stroke-width="2" marker-end="${mk}"/>`;
+    } else {
+      const midY = a.y + nodeH + gapY/2;
+      svg += `<path d="M${a.cx},${a.y+nodeH} L${a.cx},${midY} L${b.cx},${midY} L${b.cx},${b.y}" fill="none" ${cls} stroke-width="2" marker-end="${mk}"/>`;
+    }
+  }
+
+  // End node
+  if(pos.length){
+    const last=pos[pos.length-1];
+    const endY=last.y+nodeH+38;
+    svg += `<line x1="${last.cx}" y1="${last.y+nodeH}" x2="${last.cx}" y2="${endY-18}" stroke="#30363d" stroke-width="2" marker-end="url(#ah)"/>`;
+    svg += `<ellipse cx="${last.cx}" cy="${endY}" rx="58" ry="18" fill="#0d2818" stroke="#3fb950" stroke-width="2.5" stroke-dasharray="8,4" filter="url(#sk)"/>
+            <text x="${last.cx}" y="${endY+1}" style="font-size:12px;font-weight:600;fill:#3fb950;text-anchor:middle;dominant-baseline:central">\u{1F3C1} Complete</text>`;
+  }
+  svg += '</svg>';
+  container.innerHTML = svg;
 }
 
 async function approvePlan(planId, approved){
