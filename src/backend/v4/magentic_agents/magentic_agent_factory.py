@@ -74,7 +74,12 @@ class MagenticAgentFactory:
             return ProxyAgent(user_id=user_id)
 
         # Validate supported models
-        supported_models = json.loads(config.SUPPORTED_MODELS)
+        models_str = config.SUPPORTED_MODELS.strip()
+        if models_str and models_str[0] == '[' and '"' not in models_str:
+            # Handle unquoted format like [o3,o4-mini,gpt-4.1,gpt-4.1-mini]
+            supported_models = [m.strip() for m in models_str.strip('[]').split(',')]
+        else:
+            supported_models = json.loads(models_str) if models_str else []
 
         if deployment_name not in supported_models:
             raise UnsupportedModelError(

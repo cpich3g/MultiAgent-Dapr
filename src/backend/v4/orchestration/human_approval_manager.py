@@ -5,6 +5,7 @@ Extends StandardMagenticManager (agent_framework version) to add approval gates 
 
 import asyncio
 import logging
+import os
 from typing import Any, Optional
 
 import v4.models.messages as messages
@@ -123,14 +124,21 @@ DO NOT EVER OFFER TO HELP FURTHER IN THE FINAL ANSWER! Just provide the final an
             logger.error("Error processing plan approval: %s", e)
 
         # Send approval request
-        await connection_config.send_status_update_async(
-            message=approval_message,
-            user_id=self.current_user_id,
-            message_type=messages.WebsocketMessageType.PLAN_APPROVAL_REQUEST,
-        )
+        auto_approve = os.environ.get("AUTO_APPROVE_PLANS", "").lower() == "true"
+        if auto_approve:
+            logger.info("Auto-approving plan (AUTO_APPROVE_PLANS=true)")
+            approval_response = messages.PlanApprovalResponse(
+                approved=True, m_plan_id=approval_message.plan.id
+            )
+        else:
+            await connection_config.send_status_update_async(
+                message=approval_message,
+                user_id=self.current_user_id,
+                message_type=messages.WebsocketMessageType.PLAN_APPROVAL_REQUEST,
+            )
 
-        # Await user response
-        approval_response = await self._wait_for_user_approval(approval_message.plan.id)
+            # Await user response
+            approval_response = await self._wait_for_user_approval(approval_message.plan.id)
 
         if approval_response and approval_response.approved:
             logger.info("Plan approved - proceeding with execution...")

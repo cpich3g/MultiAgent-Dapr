@@ -31,6 +31,16 @@ param approvalsMailbox string = 'justinjoy@microsoft.com'
 @description('Required. User principal ID used for backend API authentication.')
 param userPrincipalId string = 'justinjoy@microsoft.com'
 
+@description('Required. Azure Document Intelligence endpoint for OCR.')
+param docIntelligenceEndpoint string = 'https://ai-justinjoy-4099.cognitiveservices.azure.com'
+
+@description('Required. Azure Document Intelligence API key.')
+@secure()
+param docIntelligenceKey string
+
+@description('Required. Monitor dashboard base URL for approval links.')
+param monitorUrl string = 'https://ca-monitor.delightfulsmoke-0952149e.swedencentral.azurecontainerapps.io'
+
 // ========== Office 365 API Connection ========== //
 resource office365Connection 'Microsoft.Web/connections@2016-06-01' = {
   name: 'office365-${solutionSuffix}'
@@ -53,6 +63,9 @@ resource newHireTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
   name: 'logic-newhire-${solutionSuffix}'
   location: location
   tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     state: 'Enabled'
     definition: {
@@ -84,6 +97,104 @@ resource newHireTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
         }
       }
       actions: {
+        'Check_Has_Attachments': {
+          type: 'If'
+          expression: {
+            and: [
+              {
+                equals: [
+                  '@triggerBody()?[\'value\'][0]?[\'hasAttachments\']'
+                  true
+                ]
+              }
+              {
+                not: {
+                  equals: [
+                    '@triggerBody()?[\'value\'][0]?[\'attachments\']'
+                    ''
+                  ]
+                }
+              }
+            ]
+          }
+          runAfter: {}
+          actions: {
+            'OCR_Document': {
+              type: 'Http'
+              inputs: {
+                method: 'POST'
+                uri: '${docIntelligenceEndpoint}/documentintelligence/documentModels/prebuilt-layout:analyze?api-version=2024-11-30&outputContentFormat=markdown'
+                headers: {
+                  'Content-Type': 'application/json'
+                }
+                body: {
+                  base64Source: '@{triggerBody()?[\'value\'][0]?[\'attachments\'][0]?[\'contentBytes\']}'
+                }
+                authentication: {
+                  type: 'ManagedServiceIdentity'
+                  audience: 'https://cognitiveservices.azure.com'
+                }
+              }
+              runAfter: {}
+            }
+            'Wait_For_OCR': {
+              type: 'Http'
+              inputs: {
+                method: 'GET'
+                uri: '@{outputs(\'OCR_Document\')[\'headers\'][\'Operation-Location\']}'
+                authentication: {
+                  type: 'ManagedServiceIdentity'
+                  audience: 'https://cognitiveservices.azure.com'
+                }
+              }
+              runAfter: {
+                'OCR_Document': ['Succeeded']
+              }
+            }
+            'Wait_10s': {
+              type: 'Wait'
+              inputs: {
+                interval: {
+                  count: 10
+                  unit: 'Second'
+                }
+              }
+              runAfter: {
+                'Wait_For_OCR': ['Succeeded']
+              }
+            }
+            'Get_OCR_Result': {
+              type: 'Http'
+              inputs: {
+                method: 'GET'
+                uri: '@{outputs(\'OCR_Document\')[\'headers\'][\'Operation-Location\']}'
+                authentication: {
+                  type: 'ManagedServiceIdentity'
+                  audience: 'https://cognitiveservices.azure.com'
+                }
+              }
+              runAfter: {
+                'Wait_10s': ['Succeeded']
+              }
+            }
+            'Set_OCR_Text': {
+              type: 'Compose'
+              inputs: '@{body(\'Get_OCR_Result\')?[\'analyzeResult\']?[\'content\']}'
+              runAfter: {
+                'Get_OCR_Result': ['Succeeded']
+              }
+            }
+          }
+          else: {
+            actions: {
+              'Set_No_Attachment_Text': {
+                type: 'Compose'
+                inputs: 'No CV/document attached.'
+                runAfter: {}
+              }
+            }
+          }
+        }
         'Select_HR_Team': {
           type: 'Http'
           inputs: {
@@ -97,7 +208,22 @@ resource newHireTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
               team_id: hrTeamId
             }
           }
-          runAfter: {}
+          runAfter: {
+            'Check_Has_Attachments': ['Succeeded']
+          }
+        }
+        'Initialize_Team': {
+          type: 'Http'
+          inputs: {
+            method: 'GET'
+            uri: '${backendApiUrl}/api/v4/init_team'
+            headers: {
+              'x-ms-client-principal-id': userPrincipalId
+            }
+          }
+          runAfter: {
+            'Select_HR_Team': ['Succeeded']
+          }
         }
         'Submit_Onboarding_Task': {
           type: 'Http'
@@ -110,11 +236,32 @@ resource newHireTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
             }
             body: {
               session_id: '@{guid()}'
-              description: 'Onboard new employee from email. Subject: @{triggerBody()?[\'Subject\']}. Email body: @{triggerBody()?[\'BodyPreview\']}'
+              description: 'Onboard new employee from email. Subject: @{triggerBody()?[\'value\'][0]?[\'subject\']}. Email body: @{triggerBody()?[\'value\'][0]?[\'bodyPreview\']}. Attached CV/Document (OCR): @{coalesce(outputs(\'Set_OCR_Text\'), outputs(\'Set_No_Attachment_Text\'))}'
             }
           }
           runAfter: {
-            'Select_HR_Team': ['Succeeded']
+            'Initialize_Team': ['Succeeded']
+          }
+        }
+        'Send_Approval_Email': {
+          type: 'ApiConnection'
+          inputs: {
+            host: {
+              connection: {
+                name: '@parameters(\'$connections\')[\'office365\'][\'connectionId\']'
+              }
+            }
+            method: 'post'
+            path: '/v2/Mail'
+            body: {
+              To: hrMailbox
+              Subject: '[ACTION REQUIRED] Approve Onboarding Plan - @{triggerBody()?[\'value\'][0]?[\'subject\']}'
+              Body: '<h2>New Onboarding Plan Requires Approval</h2><p><strong>Subject:</strong> @{triggerBody()?[\'value\'][0]?[\'subject\']}</p><p><strong>Plan ID:</strong> @{body(\'Submit_Onboarding_Task\')?[\'plan_id\']}</p><p><strong>Email Body:</strong><br/>@{triggerBody()?[\'value\'][0]?[\'bodyPreview\']}</p><hr/><p>Click below to approve or reject:</p><p><a href="${monitorUrl}/api/email-approve/@{body(\'Submit_Onboarding_Task\')?[\'plan_id\']}?decision=approved" style="background:#238636;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;margin-right:12px;">✅ APPROVE</a>&nbsp;&nbsp;<a href="${monitorUrl}/api/email-approve/@{body(\'Submit_Onboarding_Task\')?[\'plan_id\']}?decision=rejected" style="background:#da3633;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">❌ REJECT</a></p><hr/><p style="color:gray;font-size:12px;">Or open the <a href="${monitorUrl}">Monitor Dashboard</a> to review the full plan.</p>'
+              IsHtml: true
+            }
+          }
+          runAfter: {
+            'Submit_Onboarding_Task': ['Succeeded']
           }
         }
       }
@@ -189,6 +336,19 @@ resource separationTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
           }
           runAfter: {}
         }
+        'Initialize_Team': {
+          type: 'Http'
+          inputs: {
+            method: 'GET'
+            uri: '${backendApiUrl}/api/v4/init_team'
+            headers: {
+              'x-ms-client-principal-id': userPrincipalId
+            }
+          }
+          runAfter: {
+            'Select_HR_Team': ['Succeeded']
+          }
+        }
         'Submit_Offboarding_Task': {
           type: 'Http'
           inputs: {
@@ -200,11 +360,11 @@ resource separationTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
             }
             body: {
               session_id: '@{guid()}'
-              description: 'Offboard employee from separation email. Subject: @{triggerBody()?[\'Subject\']}. Email body: @{triggerBody()?[\'BodyPreview\']}'
+              description: 'Offboard employee from separation email. Subject: @{triggerBody()?[\'value\'][0]?[\'subject\']}. Email body: @{triggerBody()?[\'value\'][0]?[\'bodyPreview\']}'
             }
           }
           runAfter: {
-            'Select_HR_Team': ['Succeeded']
+            'Initialize_Team': ['Succeeded']
           }
         }
       }
@@ -266,12 +426,12 @@ resource approvalResponseHandler 'Microsoft.Logic/workflows@2019-05-01' = {
       actions: {
         'Extract_Approval_ID': {
           type: 'Compose'
-          inputs: '@split(split(triggerBody()?[\'subject\'], \'[APPROVAL:\')[1], \']\')[0]'
+          inputs: '@split(split(triggerBody()?[\'value\'][0]?[\'subject\'], \'[APPROVAL:\')[1], \']\')[0]'
           runAfter: {}
         }
         'Determine_Decision': {
           type: 'Compose'
-          inputs: '@if(contains(toLower(triggerBody()?[\'body\']), \'approved\'), \'approved\', \'rejected\')'
+          inputs: '@if(contains(toLower(triggerBody()?[\'value\'][0]?[\'bodyPreview\']), \'approved\'), \'approved\', \'rejected\')'
           runAfter: {}
         }
         'Send_Decision_To_Approval_MCP': {
@@ -284,8 +444,8 @@ resource approvalResponseHandler 'Microsoft.Logic/workflows@2019-05-01' = {
             }
             body: {
               decision: '@outputs(\'Determine_Decision\')'
-              approver: '@triggerBody()?[\'from\']'
-              comments: '@triggerBody()?[\'body\']'
+              approver: '@triggerBody()?[\'value\'][0]?[\'from\']'
+              comments: '@triggerBody()?[\'value\'][0]?[\'bodyPreview\']'
             }
           }
           runAfter: {

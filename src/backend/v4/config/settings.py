@@ -6,6 +6,7 @@ Handles Azure OpenAI, MCP, and environment setup (agent_framework version).
 import asyncio
 import json
 import logging
+import os
 from typing import Dict, Optional, Any
 
 from common.config.app_config import config
@@ -98,7 +99,7 @@ class OrchestrationConfig:
         self._clarification_events: Dict[str, asyncio.Event] = {}
 
         # Default timeout (seconds) for waiting operations
-        self.default_timeout: float = 300.0
+        self.default_timeout: float = float(os.environ.get("APPROVAL_TIMEOUT_SECONDS", "1800"))
 
     def get_current_orchestration(self, user_id: str) -> Any:
         """Get existing orchestration workflow instance for user_id."""
