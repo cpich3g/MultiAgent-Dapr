@@ -84,21 +84,6 @@ resource newHireTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
         }
       }
       actions: {
-        'Parse_Email_Content': {
-          type: 'ParseJson'
-          inputs: {
-            content: '@triggerBody()'
-            schema: {
-              type: 'object'
-              properties: {
-                subject: { type: 'string' }
-                body: { type: 'string' }
-                from: { type: 'string' }
-              }
-            }
-          }
-          runAfter: {}
-        }
         'Select_HR_Team': {
           type: 'Http'
           inputs: {
@@ -112,9 +97,7 @@ resource newHireTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
               team_id: hrTeamId
             }
           }
-          runAfter: {
-            'Parse_Email_Content': ['Succeeded']
-          }
+          runAfter: {}
         }
         'Submit_Onboarding_Task': {
           type: 'Http'
@@ -127,31 +110,11 @@ resource newHireTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
             }
             body: {
               session_id: '@{guid()}'
-              description: 'Onboard new employee from email. Subject: @{body(\'Parse_Email_Content\')?[\'subject\']}. Email body: @{body(\'Parse_Email_Content\')?[\'body\']}'
+              description: 'Onboard new employee from email. Subject: @{triggerBody()?[\'Subject\']}. Email body: @{triggerBody()?[\'BodyPreview\']}'
             }
           }
           runAfter: {
             'Select_HR_Team': ['Succeeded']
-          }
-        }
-        'On_Parse_Failure': {
-          type: 'ApiConnection'
-          inputs: {
-            host: {
-              connection: {
-                name: '@parameters(\'$connections\')[\'office365\'][\'connectionId\']'
-              }
-            }
-            method: 'post'
-            path: '/v2/Mail'
-            body: {
-              To: hrMailbox
-              Subject: '[PARSE ERROR] Failed to parse new hire email'
-              Body: 'The following email could not be parsed for onboarding: @{triggerBody()?[\'subject\']}'
-            }
-          }
-          runAfter: {
-            'Parse_Email_Content': ['Failed']
           }
         }
       }
@@ -211,21 +174,6 @@ resource separationTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
         }
       }
       actions: {
-        'Parse_Separation_Email': {
-          type: 'ParseJson'
-          inputs: {
-            content: '@triggerBody()'
-            schema: {
-              type: 'object'
-              properties: {
-                subject: { type: 'string' }
-                body: { type: 'string' }
-                from: { type: 'string' }
-              }
-            }
-          }
-          runAfter: {}
-        }
         'Select_HR_Team': {
           type: 'Http'
           inputs: {
@@ -239,9 +187,7 @@ resource separationTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
               team_id: hrTeamId
             }
           }
-          runAfter: {
-            'Parse_Separation_Email': ['Succeeded']
-          }
+          runAfter: {}
         }
         'Submit_Offboarding_Task': {
           type: 'Http'
@@ -254,31 +200,11 @@ resource separationTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
             }
             body: {
               session_id: '@{guid()}'
-              description: 'Offboard employee from separation email. Subject: @{body(\'Parse_Separation_Email\')?[\'subject\']}. Email body: @{body(\'Parse_Separation_Email\')?[\'body\']}'
+              description: 'Offboard employee from separation email. Subject: @{triggerBody()?[\'Subject\']}. Email body: @{triggerBody()?[\'BodyPreview\']}'
             }
           }
           runAfter: {
             'Select_HR_Team': ['Succeeded']
-          }
-        }
-        'On_Parse_Failure': {
-          type: 'ApiConnection'
-          inputs: {
-            host: {
-              connection: {
-                name: '@parameters(\'$connections\')[\'office365\'][\'connectionId\']'
-              }
-            }
-            method: 'post'
-            path: '/v2/Mail'
-            body: {
-              To: hrMailbox
-              Subject: '[PARSE ERROR] Failed to parse separation email'
-              Body: 'The following email could not be parsed for offboarding: @{triggerBody()?[\'subject\']}'
-            }
-          }
-          runAfter: {
-            'Parse_Separation_Email': ['Failed']
           }
         }
       }
