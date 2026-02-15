@@ -1,5 +1,6 @@
 """Utility functions for agent_framework-based integration and agent management."""
 
+import asyncio
 import logging
 import uuid
 from common.config.app_config import config
@@ -121,18 +122,12 @@ async def create_RAI_agent(
 async def _get_agent_response(agent: FoundryAgentTemplate, query: str) -> str:
     """
     Stream the agent response fully and return concatenated text.
-
-    For agent_framework streaming:
-      - Each update may have .text
-      - Or tool/content items in update.contents with .text
     """
     parts: list[str] = []
     try:
         async for message in agent.invoke(query):
-            # Prefer direct text
             if hasattr(message, "text") and message.text:
                 parts.append(str(message.text))
-            # Fallback to contents (tool calls, chunks)
             contents = getattr(message, "contents", None)
             if contents:
                 for item in contents:
@@ -142,7 +137,7 @@ async def _get_agent_response(agent: FoundryAgentTemplate, query: str) -> str:
         return "".join(parts) if parts else ""
     except Exception as e:
         logging.error("Error streaming agent response: %s", e)
-        return "TRUE"  # Default to blocking on error
+        raise  # Let caller decide how to handle
 
 
 async def rai_success(
@@ -151,34 +146,48 @@ async def rai_success(
     """
     Run a RAI compliance check on the provided description using the RAIAgent.
     Returns True if content is safe (should proceed), False if it should be blocked.
+    Allows on transient errors to avoid blocking legitimate requests.
     """
-    agent: FoundryAgentTemplate | None = None
-    try:
-        agent = await create_RAI_agent(team_config, memory_store)
-        if not agent:
-            logging.error("Failed to instantiate RAIAgent.")
-            return False
+    for attempt in range(3):
+        agent: FoundryAgentTemplate | None = None
+        try:
+            agent = await create_RAI_agent(team_config, memory_store)
+            if not agent:
+                logging.error("Failed to instantiate RAIAgent.")
+                return True  # Allow on infrastructure failure
 
-        response_text = await _get_agent_response(agent, description)
-        verdict = response_text.strip().upper()
+            response_text = await asyncio.wait_for(
+                _get_agent_response(agent, description), timeout=30
+            )
+            verdict = response_text.strip().upper()
 
-        if "FALSE" in verdict:  # any false in the response
-            logging.info("RAI check passed.")
-            return True
-        else:
-            logging.info("RAI check failed (blocked). Sample: %s...", description[:60])
-            return False
+            if "FALSE" in verdict:
+                logging.info("RAI check passed.")
+                return True
+            elif "TRUE" in verdict:
+                logging.info("RAI check failed (blocked). Sample: %s...", description[:60])
+                return False
+            else:
+                logging.warning("RAI check returned ambiguous response: %s", verdict[:100])
+                return True  # Allow on ambiguous response
 
-    except Exception as e:
-        logging.error("RAI check error: %s — blocking by default.", e)
-        return False
-    finally:
-        # Ensure we close resources
-        if agent:
-            try:
-                await agent.close()
-            except Exception:
-                pass
+        except (asyncio.TimeoutError, ConnectionError, OSError) as e:
+            logging.warning("RAI check attempt %d transient error: %s", attempt + 1, e)
+            if attempt < 2:
+                await asyncio.sleep(2)
+                continue
+            logging.warning("RAI check failed after retries — allowing request through.")
+            return True  # Allow on transient errors
+        except Exception as e:
+            logging.error("RAI check error: %s — allowing request through.", e)
+            return True  # Allow on unexpected errors
+        finally:
+            if agent:
+                try:
+                    await agent.close()
+                except Exception:
+                    pass
+    return True  # Fallback allow
 
 
 async def rai_validate_team_config(

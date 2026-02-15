@@ -331,9 +331,15 @@ async def process_request(
     try:
 
         async def run_orchestration_task():
-            await OrchestrationManager().run_orchestration(
-                user_id, input_task, plan_id=plan_id, session_id=input_task.session_id
-            )
+            import traceback as _tb
+            try:
+                logger.warning("Background task starting orchestration for user=%s plan=%s", user_id, plan_id)
+                await OrchestrationManager().run_orchestration(
+                    user_id, input_task, plan_id=plan_id, session_id=input_task.session_id
+                )
+                logger.warning("Background task completed for plan=%s", plan_id)
+            except Exception as bg_err:
+                logger.error("Background orchestration task FAILED: %s\n%s", bg_err, _tb.format_exc())
 
         background_tasks.add_task(run_orchestration_task)
 
@@ -483,6 +489,8 @@ async def plan_approval(
                 raise HTTPException(
                     status_code=404, detail="No active plan found for approval"
                 )
+    except HTTPException:
+        raise  # Let FastAPI handle HTTP exceptions directly
     except Exception as e:
         logging.error(f"Error processing plan approval: {e}")
         try:

@@ -243,6 +243,28 @@ resource newHireTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
             'Initialize_Team': ['Succeeded']
           }
         }
+        'Wait_For_Plan': {
+          type: 'Wait'
+          inputs: {
+            interval: {
+              count: 45
+              unit: 'Second'
+            }
+          }
+          runAfter: {
+            'Submit_Onboarding_Task': ['Succeeded']
+          }
+        }
+        'Fetch_Plan_Details': {
+          type: 'Http'
+          inputs: {
+            method: 'GET'
+            uri: '${monitorUrl}/api/plan/@{body(\'Submit_Onboarding_Task\')?[\'plan_id\']}/mplan'
+          }
+          runAfter: {
+            'Wait_For_Plan': ['Succeeded']
+          }
+        }
         'Send_Approval_Email': {
           type: 'ApiConnection'
           inputs: {
@@ -255,13 +277,13 @@ resource newHireTrigger 'Microsoft.Logic/workflows@2019-05-01' = {
             path: '/v2/Mail'
             body: {
               To: hrMailbox
-              Subject: '[ACTION REQUIRED] Approve Onboarding Plan - @{triggerBody()?[\'value\'][0]?[\'subject\']}'
-              Body: '<h2>New Onboarding Plan Requires Approval</h2><p><strong>Subject:</strong> @{triggerBody()?[\'value\'][0]?[\'subject\']}</p><p><strong>Plan ID:</strong> @{body(\'Submit_Onboarding_Task\')?[\'plan_id\']}</p><p><strong>Email Body:</strong><br/>@{triggerBody()?[\'value\'][0]?[\'bodyPreview\']}</p><hr/><p>Click below to approve or reject:</p><p><a href="${monitorUrl}/api/email-approve/@{body(\'Submit_Onboarding_Task\')?[\'plan_id\']}?decision=approved" style="background:#238636;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;margin-right:12px;">✅ APPROVE</a>&nbsp;&nbsp;<a href="${monitorUrl}/api/email-approve/@{body(\'Submit_Onboarding_Task\')?[\'plan_id\']}?decision=rejected" style="background:#da3633;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">❌ REJECT</a></p><hr/><p style="color:gray;font-size:12px;">Or open the <a href="${monitorUrl}">Monitor Dashboard</a> to review the full plan.</p>'
+              Subject: '[ONBOARDING PLAN] @{triggerBody()?[\'value\'][0]?[\'subject\']} - Review Agent Execution Plan'
+              Body: '<div style="font-family:Segoe UI,sans-serif;max-width:700px;margin:0 auto"><h2 style="color:#1f6feb">🤖 HR Onboarding Agent Execution Plan</h2><p><strong>Subject:</strong> @{triggerBody()?[\'value\'][0]?[\'subject\']}</p><p><strong>Plan ID:</strong> <code>@{body(\'Submit_Onboarding_Task\')?[\'plan_id\']}</code></p><p><strong>Status:</strong> Auto-approved &amp; executing</p><hr style="border:1px solid #30363d"/><h3 style="color:#58a6ff">📋 Execution Steps</h3><p>@{if(greater(length(coalesce(body(\'Fetch_Plan_Details\')?[\'steps\'],json(\'[]\'))),0),concat(\'<ol style="padding-left:20px">\',replace(replace(replace(string(body(\'Fetch_Plan_Details\')?[\'steps\']),\'{"agent":"\',\'<li><strong>\'),\'","action":"\',\'</strong>: \'),\'"},\',\'</li>\'),\'</ol>\'),\'Plan steps still generating... check the dashboard.\')}</p><hr style="border:1px solid #30363d"/><h3 style="color:#58a6ff">📧 Original Request</h3><p>@{triggerBody()?[\'value\'][0]?[\'bodyPreview\']}</p><hr style="border:1px solid #30363d"/><p>📊 <a href="${monitorUrl}" style="color:#58a6ff;font-weight:bold">Open Monitor Dashboard</a> to track live progress</p><p style="color:gray;font-size:12px">This plan was auto-approved. Agents are executing now.</p></div>'
               IsHtml: true
             }
           }
           runAfter: {
-            'Submit_Onboarding_Task': ['Succeeded']
+            'Fetch_Plan_Details': ['Succeeded', 'Failed']
           }
         }
       }

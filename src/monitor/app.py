@@ -42,7 +42,7 @@ def query(sql, params=None):
 def api_plans():
     rows = query(
         "SELECT c.id, c.plan_id, c.session_id, c.user_id, c.team_id, "
-        "c.initial_goal, c.overall_status, c.summary, c.timestamp, c.source "
+        "c.initial_goal, c.overall_status, c.summary, c.timestamp, c.source, c.approved "
         "FROM c WHERE c.data_type='plan' ORDER BY c.timestamp DESC OFFSET 0 LIMIT 50"
     )
     return JSONResponse(rows)
@@ -117,6 +117,32 @@ async def api_resubmit_plan(plan_id: str):
             headers={"Content-Type": "application/json", "x-ms-client-principal-id": user_id})
     return JSONResponse({"status": resp.status_code, "body": resp.json(), "new_session": new_session})
 
+
+@app.post("/api/upsert")
+async def api_upsert(request: Request):
+    """Upsert a document into Cosmos DB."""
+    doc = await request.json()
+    c = get_container()
+    c.upsert_item(doc)
+    return JSONResponse({"status": "ok", "id": doc.get("id", "")})
+
+
+@app.post("/api/query")
+async def api_query(request: Request):
+    """Run a raw Cosmos DB query. Body: {query: string, parameters?: list}"""
+    body = await request.json()
+    q = body.get("query", "")
+    params = body.get("parameters", [])
+    rows = query(q, params)
+    return JSONResponse(rows)
+
+
+@app.delete("/api/doc/{doc_id}")
+async def api_delete_doc(doc_id: str, partition_key: str):
+    """Delete a document by id and partition key."""
+    c = get_container()
+    c.delete_item(doc_id, partition_key=partition_key)
+    return JSONResponse({"status": "deleted", "id": doc_id})
 
 @app.post("/api/approve/{plan_id}")
 async def api_approve_plan(plan_id: str, request: Request):
@@ -361,7 +387,7 @@ function renderDetail(d){
     // Check if m_plan exists
     fetch(API+'/api/plan/'+p.plan_id+'/mplan').then(r=>r.json()).then(mp=>{
       const box = document.getElementById('approval-box');
-      if(mp.m_plan_id){
+      if(mp.m_plan_id && !p.approved){
         box.innerHTML = `<h3>⏳ Plan Ready for Approval</h3>
           <p>This plan needs your approval before agents can execute.</p>
           <div class="approval-btns">
@@ -369,6 +395,9 @@ function renderDetail(d){
             <button class="btn-reject" onclick="approvePlan('${p.plan_id}',false)">❌ Reject</button>
           </div>
           <div id="approval-status"></div>`;
+      } else if(mp.m_plan_id && p.approved){
+        box.innerHTML = `<h3>✅ Plan Auto-Approved</h3>
+          <p>This plan was automatically approved. Agents are executing.</p>`;
       } else {
         box.innerHTML = `<h3>⏳ Plan Still Generating...</h3>
           <p>The AI is still creating the execution plan, or it may have failed. Check backend logs for errors.</p>

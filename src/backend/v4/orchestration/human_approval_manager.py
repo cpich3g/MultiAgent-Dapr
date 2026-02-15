@@ -173,6 +173,18 @@ DO NOT EVER OFFER TO HELP FURTHER IN THE FINAL ANSWER! Just provide the final an
             approval_response = messages.PlanApprovalResponse(
                 approved=True, m_plan_id=approval_message.plan.id
             )
+            # Update plan approved flag in Cosmos DB
+            try:
+                from common.database.database_factory import DatabaseFactory
+                db = await DatabaseFactory.get_database(user_id=self.current_user_id)
+                q = "SELECT * FROM c WHERE c.data_type='plan' AND c.user_id=@uid AND c.overall_status='in_progress' ORDER BY c._ts DESC OFFSET 0 LIMIT 1"
+                async for plan_doc in db.container.query_items(query=q, parameters=[{"name": "@uid", "value": self.current_user_id}]):
+                    plan_doc["approved"] = True
+                    await db.container.upsert_item(plan_doc)
+                    logger.info("Plan %s marked as approved in Cosmos DB", plan_doc.get("plan_id"))
+                    break
+            except Exception as e:
+                logger.warning("Failed to update plan approved flag: %s", e)
         else:
             await connection_config.send_status_update_async(
                 message=approval_message,
