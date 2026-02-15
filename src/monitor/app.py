@@ -59,7 +59,7 @@ def api_plan_detail(plan_id: str):
         [{"name": "@pid", "value": plan_id}],
     )
     messages = query(
-        "SELECT * FROM c WHERE c.data_type='agent_message' AND c.plan_id=@pid ORDER BY c.timestamp ASC",
+        "SELECT * FROM c WHERE c.data_type IN ('agent_message','m_plan_message') AND c.plan_id=@pid ORDER BY c.timestamp ASC",
         [{"name": "@pid", "value": plan_id}],
     )
     return JSONResponse({"plan": plans[0] if plans else None, "steps": steps, "messages": messages})
@@ -386,9 +386,9 @@ function renderDetail(d){
 
   if(activeTab === 'flow'){
     html += '<div class="flow-container" id="flow-container"><div style="color:#484f58">Loading agent flow...</div></div>';
-    // Fetch m_plan for flowchart data
+    // Fetch m_plan for flowchart data — pass messages for status
     fetch(API+'/api/plan/'+p.plan_id+'/mplan').then(r=>r.json()).then(mp=>{
-      renderFlowchart(mp, d.steps, document.getElementById('flow-container'));
+      renderFlowchart(mp, d.steps, d.messages, document.getElementById('flow-container'));
     });
   } else if(activeTab === 'steps'){
     if(d.steps.length===0) html += '<div style="color:#484f58;padding:20px">No steps yet</div>';
@@ -404,7 +404,7 @@ function renderDetail(d){
     if(d.messages.length===0) html += '<div style="color:#484f58;padding:20px">No messages yet</div>';
     d.messages.forEach(m=>{
       html += `<div class="msg">
-        <div class="src">${esc(m.source||'')} <span style="color:#484f58;font-weight:400">${shortTime(m.timestamp)}</span></div>
+        <div class="src">${esc(m.source||m.agent||'')} <span style="color:#484f58;font-weight:400">${shortTime(m.timestamp)}</span></div>
         <div class="content">${esc(m.content||'')}</div>
       </div>`;
     });
@@ -412,7 +412,7 @@ function renderDetail(d){
   el.innerHTML = html;
 }
 
-function renderFlowchart(mplan, executedSteps, container){
+function renderFlowchart(mplan, executedSteps, agentMessages, container){
   const steps = mplan.steps || [];
   if(!steps.length){
     container.innerHTML = '<div style="color:#484f58;padding:20px">No agent plan steps available yet.</div>';
@@ -420,6 +420,9 @@ function renderFlowchart(mplan, executedSteps, container){
   }
   const statusMap = {};
   (executedSteps||[]).forEach(s=>{ if(s.agent) statusMap[s.agent] = s.status; });
+  // Also derive status from agent messages (m_plan_message docs)
+  const agentsThatResponded = new Set();
+  (agentMessages||[]).forEach(m=>{ if(m.agent) agentsThatResponded.add(m.agent); });
 
   const colors = ['#1f6feb','#238636','#8957e5','#da3633','#bf8700','#f778ba','#3fb950','#58a6ff','#bc8cff'];
   const agentColor = (i) => colors[i % colors.length];
@@ -466,7 +469,9 @@ function renderFlowchart(mplan, executedSteps, container){
 
     const agent = step.agent || 'Agent';
     const action = trunc(step.action || '', 50);
-    const st = statusMap[agent];
+    let st = statusMap[agent];
+    // If no step-based status, derive from agent messages
+    if(!st && agentsThatResponded.has(agent)) st = 'completed';
     const fill = st==='completed'?'#0d2818': st==='in_progress'||st==='action_requested'?'#0d1d32':'#161b22';
     const stroke = st==='completed'?'#3fb950': st==='in_progress'||st==='action_requested'?'#58a6ff': agentColor(i);
 
@@ -488,7 +493,8 @@ function renderFlowchart(mplan, executedSteps, container){
   // Edges between nodes
   for(let i=0;i<pos.length-1;i++){
     const a=pos[i], b=pos[i+1];
-    const fromSt = statusMap[steps[i].agent];
+    let fromSt = statusMap[steps[i].agent];
+    if(!fromSt && agentsThatResponded.has(steps[i].agent)) fromSt = 'completed';
     const cls = fromSt==='completed'?'stroke:#3fb950': fromSt==='in_progress'?'stroke:#58a6ff':'stroke:#30363d';
     const mk = fromSt==='completed'?'url(#ah-g)': fromSt==='in_progress'?'url(#ah-b)':'url(#ah)';
     const sameRow = Math.floor(i/cols)===Math.floor((i+1)/cols);

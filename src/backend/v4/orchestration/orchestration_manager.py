@@ -19,9 +19,15 @@ from agent_framework import (
 )
 
 from common.config.app_config import config
-from common.models.messages_af import TeamConfiguration
+from common.models.messages_af import (
+    TeamConfiguration,
+    AgentMessageData,
+    AgentMessageType,
+    PlanStatus,
+)
 
 from common.database.database_base import DatabaseBase
+from common.database.database_factory import DatabaseFactory
 
 from v4.common.services.team_service import TeamService
 from v4.callbacks.response_handlers import (
@@ -220,7 +226,13 @@ class OrchestrationManager:
     # ---------------------------
     # Execution
     # ---------------------------
-    async def run_orchestration(self, user_id: str, input_task) -> None:
+    async def run_orchestration(
+        self,
+        user_id: str,
+        input_task,
+        plan_id: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
         """
         Execute the Magentic workflow for the provided user and task description.
         """
@@ -299,9 +311,32 @@ class OrchestrationManager:
         task_text = getattr(input_task, "description", str(input_task))
         self.logger.debug("Task: %s", task_text)
 
+        # Resolve plan_id if not provided — find latest in_progress plan for user
+        if not plan_id:
+            try:
+                db = await DatabaseFactory.get_database(user_id=user_id)
+                query = (
+                    "SELECT TOP 1 * FROM c "
+                    "WHERE c.data_type='plan' AND c.user_id=@uid "
+                    "AND c.overall_status='in_progress' "
+                    "ORDER BY c.timestamp DESC"
+                )
+                results = list(
+                    db.container.query_items(
+                        query=query,
+                        parameters=[{"name": "@uid", "value": user_id}],
+                        enable_cross_partition_query=True,
+                    )
+                )
+                if results:
+                    plan_id = results[0].get("plan_id")
+                    session_id = session_id or results[0].get("session_id")
+                    self.logger.info("Resolved plan_id=%s for user %s", plan_id, user_id)
+            except Exception as e:
+                self.logger.warning("Could not resolve plan_id: %s", e)
+
         try:
             # Execute workflow using run_stream with task as positional parameter
-            # The execution settings are configured in the manager/client
             final_output: str | None = None
 
             self.logger.info("Starting workflow execution...")
@@ -317,8 +352,8 @@ class OrchestrationManager:
                         try:
                             await streaming_agent_response_callback(
                                 event.agent_id,
-                                event,  # Pass the event itself as the update object
-                                False,  # Not final yet (streaming in progress)
+                                event,
+                                False,
                                 user_id,
                             )
                         except Exception as e:
@@ -337,6 +372,36 @@ class OrchestrationManager:
                                 self.logger.error(
                                     f"Error in agent callback for agent {event.agent_id}: {e}"
                                 )
+                            # Persist agent message to Cosmos DB
+                            if plan_id:
+                                try:
+                                    msg_text = ""
+                                    if isinstance(event.message, ChatMessage):
+                                        msg_text = event.message.text or ""
+                                    else:
+                                        msg_text = str(getattr(event.message, "text", ""))
+                                    from v4.callbacks.response_handlers import clean_citations
+                                    msg_text = clean_citations(msg_text)
+                                    if msg_text:
+                                        agent_msg = AgentMessageData(
+                                            plan_id=plan_id,
+                                            session_id=session_id or "",
+                                            user_id=user_id,
+                                            agent=event.agent_id or "unknown",
+                                            agent_type=AgentMessageType.AI_AGENT,
+                                            content=msg_text,
+                                            raw_data=msg_text,
+                                        )
+                                        db = await DatabaseFactory.get_database(user_id=user_id)
+                                        await db.add_agent_message(agent_msg)
+                                        self.logger.info(
+                                            "Persisted agent message to Cosmos: agent=%s len=%d",
+                                            event.agent_id, len(msg_text),
+                                        )
+                                except Exception as persist_err:
+                                    self.logger.error(
+                                        "Failed to persist agent message: %s", persist_err
+                                    )
 
                     # Handle final result from the entire workflow
                     elif isinstance(event, MagenticFinalResultEvent):
@@ -366,13 +431,34 @@ class OrchestrationManager:
             final_text = final_output if final_output else ""
 
             # Log results
-            self.logger.info("\nAgent responses:")
             self.logger.info(
                 "Orchestration completed. Final result length: %d chars",
                 len(final_text),
             )
-            self.logger.info("\nFinal result:\n%s", final_text)
             self.logger.info("=" * 50)
+
+            # Update plan status to completed in Cosmos DB
+            if plan_id:
+                try:
+                    db = await DatabaseFactory.get_database(user_id=user_id)
+                    query = (
+                        "SELECT * FROM c WHERE c.plan_id=@pid AND c.data_type='plan'"
+                    )
+                    plans = list(
+                        db.container.query_items(
+                            query=query,
+                            parameters=[{"name": "@pid", "value": plan_id}],
+                            enable_cross_partition_query=True,
+                        )
+                    )
+                    if plans:
+                        plan_doc = plans[0]
+                        plan_doc["overall_status"] = PlanStatus.completed.value
+                        plan_doc["summary"] = final_text[:500] if final_text else "Completed"
+                        db.container.upsert_item(plan_doc)
+                        self.logger.info("Plan %s marked as completed", plan_id)
+                except Exception as e:
+                    self.logger.warning("Failed to update plan status: %s", e)
 
             # Send final result via WebSocket
             await connection_config.send_status_update_async(
@@ -396,6 +482,28 @@ class OrchestrationManager:
             if hasattr(e, "__dict__"):
                 self.logger.error("Error attributes: %s", e.__dict__)
             self.logger.info("=" * 50)
+
+            # Update plan status to failed
+            if plan_id:
+                try:
+                    db = await DatabaseFactory.get_database(user_id=user_id)
+                    query = (
+                        "SELECT * FROM c WHERE c.plan_id=@pid AND c.data_type='plan'"
+                    )
+                    plans = list(
+                        db.container.query_items(
+                            query=query,
+                            parameters=[{"name": "@pid", "value": plan_id}],
+                            enable_cross_partition_query=True,
+                        )
+                    )
+                    if plans:
+                        plan_doc = plans[0]
+                        plan_doc["overall_status"] = "failed"
+                        plan_doc["summary"] = f"Error: {str(e)[:300]}"
+                        db.container.upsert_item(plan_doc)
+                except Exception:
+                    pass
 
             # Send error status to user
             try:

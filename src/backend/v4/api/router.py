@@ -331,7 +331,9 @@ async def process_request(
     try:
 
         async def run_orchestration_task():
-            await OrchestrationManager().run_orchestration(user_id, input_task)
+            await OrchestrationManager().run_orchestration(
+                user_id, input_task, plan_id=plan_id, session_id=input_task.session_id
+            )
 
         background_tasks.add_task(run_orchestration_task)
 
